@@ -555,14 +555,14 @@
   function copyFound() {
     if (!foundUsernames.length) return;
     navigator.clipboard.writeText(foundUsernames.join('\n'));
-    setStatus('Copied Found Usernames To Clipboard');
+    setStatus('Copied Usernames To Clipboard');
   }
 
   function copyList(type) {
     const list = type === 'found' ? foundUsernames : notFoundUsernames;
     if (!list.length) { setStatus('Nothing To Copy'); return; }
     navigator.clipboard.writeText(list.join('\n'));
-    setStatus(`Copied ${list.length} ${type === 'found' ? 'Found' : 'Not Found'} Username(s)`);
+    setStatus(`Copied ${list.length} Username(s)`);
   }
 
   function insertSkeleton(username) {
