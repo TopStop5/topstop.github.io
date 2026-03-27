@@ -41,7 +41,7 @@ def make_driver():
     opts.add_argument("--blink-settings=imagesEnabled=false")
     opts.add_argument("--log-level=3")
 
-    chrome_bin = os.environ.get("CHROME_BIN", "/usr/bin/google-chrome")
+    chrome_bin = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
     chromedriver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
 
     opts.binary_location = chrome_bin
@@ -119,15 +119,23 @@ def make_zip(chapters_dict):
 # ── NovelFire ──────────────────────────────────────────────────────────────────
 
 def normalize_novelfire_url(url):
+    """Always returns https://novelfire.net/book/<slug> regardless of what the user pastes."""
     parsed = urlparse(url)
     parts = parsed.path.strip("/").split("/")
 
     if "book" in parts:
         idx = parts.index("book")
-        base = "/".join(parts[:idx + 2])
-        return f"{parsed.scheme}://{parsed.netloc}/{base}"
+        # parts[idx+1] is the slug — everything after (e.g. chapter-N) is stripped
+        if idx + 1 < len(parts):
+            base = "/".join(parts[:idx + 2])
+            return f"{parsed.scheme}://{parsed.netloc}/{base}"
 
     return url.rstrip("/")
+
+
+class ChapterNotFound(Exception):
+    """Raised when NovelFire shows the 'page moved' / chapter doesn't exist message."""
+    pass
 
 
 def scrape_novelfire_chapter(driver, base_url, ch_num):
@@ -139,6 +147,17 @@ def scrape_novelfire_chapter(driver, base_url, ch_num):
         driver.execute_script("window.stop();")
 
     time.sleep(1.5)
+
+    # ── Check for "page moved" / chapter does not exist sentinel ──
+    SENTINEL = "Some novel pages moved for better user experience"
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        if SENTINEL in body_text:
+            raise ChapterNotFound(f"Chapter {ch_num} does not exist (page moved sentinel detected)")
+    except ChapterNotFound:
+        raise
+    except Exception:
+        pass
 
     container = driver.find_element(By.ID, "chapter-container")
 
@@ -193,40 +212,46 @@ def scrape_novelfire(novel_url, start, end):
     driver = make_driver()
     chapters = {}
     failed = []
+    end_of_novel = None  # chapter number where sentinel was hit
+
+    # Extract title from slug — no need to load the homepage
+    try:
+        parsed = urlparse(novel_url)
+        parts = parsed.path.strip("/").split("/")
+        idx = parts.index("book")
+        slug = parts[idx + 1]
+        novel_title = slug.replace("-", " ").title()
+    except Exception:
+        novel_title = "Novel"
 
     try:
-        driver.get(novel_url)
-        time.sleep(2)
-
-        try:
-            parsed = urlparse(novel_url)
-            parts = parsed.path.strip("/").split("/")
-            idx = parts.index("book")
-            slug = parts[idx + 1]
-            novel_title = slug.replace("-", " ").title()
-        except Exception:
-            novel_title = "Novel"
-
         for ch in range(start, end + 1):
             try:
                 content = scrape_novelfire_chapter(driver, base_url, ch)
                 chapters[ch] = content
+            except ChapterNotFound:
+                # No more chapters exist — stop immediately, don't retry
+                end_of_novel = ch
+                break
             except Exception:
                 failed.append(ch)
 
+        # Retry genuinely failed chapters (network issues etc.) but not sentinel ones
         for ch in list(failed):
             try:
                 time.sleep(2)
                 content = scrape_novelfire_chapter(driver, base_url, ch)
                 chapters[ch] = content
                 failed.remove(ch)
+            except ChapterNotFound:
+                failed.remove(ch)  # not a scrape failure, chapter just doesn't exist
             except Exception:
                 pass
 
     finally:
         driver.quit()
 
-    return novel_title, chapters, failed
+    return novel_title, chapters, failed, end_of_novel
 
 
 # ── WeTriedTLS ─────────────────────────────────────────────────────────────────
@@ -388,22 +413,32 @@ def scrape():
 
     if "novelfire" in url:
         scrape_fn = scrape_novelfire
+        is_novelfire = True
     elif "wetriedtls" in url:
         scrape_fn = scrape_wetriedtls
+        is_novelfire = False
     elif "webnoveltranslations" in url:
         scrape_fn = scrape_webnoveltranslations
+        is_novelfire = False
     else:
         return jsonify({
             "error": "Unsupported site. Supported: novelfire, wetriedtls, webnoveltranslations"
         }), 400
 
     try:
-        novel_title, chapters, failed = scrape_fn(url, start, end)
+        if is_novelfire:
+            novel_title, chapters, failed, end_of_novel = scrape_fn(url, start, end)
+        else:
+            novel_title, chapters, failed = scrape_fn(url, start, end)
+            end_of_novel = None
     except Exception as e:
         return jsonify({"error": f"Scrape failed: {str(e)}"}), 500
 
     if not chapters:
-        return jsonify({"error": "No chapters could be scraped.", "failed": failed}), 500
+        msg = "No chapters could be scraped."
+        if end_of_novel is not None:
+            msg = f"Chapter {end_of_novel} does not exist — the novel ends before that chapter."
+        return jsonify({"error": msg, "failed": failed, "end_of_novel": end_of_novel}), 500
 
     safe_title = re.sub(r'[\\/*?:"<>|]', "-", novel_title).strip() or "Novel"
 
