@@ -24,7 +24,7 @@ response.headers[“Access-Control-Allow-Origin”] = “*”
 response.headers[“Access-Control-Allow-Headers”] = “Content-Type”
 return response
 
-# ── Site Config Registry ───────────────────────────────────────────────────────
+# – Site Config Registry —————————————————––
 
 # To add a new site, add one entry here. No other code changes needed.
 
@@ -38,11 +38,11 @@ return response
 
 # cover_sel     : CSS selector for the cover image on the novel index page (optional)
 
-# url_pattern   : chapter URL template — use {base} and {num}
+# url_pattern   : chapter URL template – use {base} and {num}
 
 # remove_sels   : list of CSS selectors to strip before extracting text
 
-# stop_phrases  : list of strings — stop collecting paragraphs when seen
+# stop_phrases  : list of strings – stop collecting paragraphs when seen
 
 # sentinel      : string in page body that means “chapter doesn’t exist”
 
@@ -90,7 +90,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY    = 2.0
 REQUEST_DELAY  = 0.5
 
-# ── Custom Exceptions ──────────────────────────────────────────────────────────
+# – Custom Exceptions –––––––––––––––––––––––––––––
 
 class ChapterNotFound(Exception):
 “”“Chapter does not exist on the site.”””
@@ -98,7 +98,7 @@ class ChapterNotFound(Exception):
 class UnsupportedSite(Exception):
 pass
 
-# ── URL Helpers ────────────────────────────────────────────────────────────────
+# – URL Helpers ––––––––––––––––––––––––––––––––
 
 def get_domain(url: str) -> str:
 return urlparse(url).netloc.replace(“www.”, “”)
@@ -115,7 +115,7 @@ if part and not part.startswith(“chapter”):
 return part.replace(”-”, “ “).title()
 return “Novel”
 
-# ── Cover Fetcher ──────────────────────────────────────────────────────────────
+# – Cover Fetcher –––––––––––––––––––––––––––––––
 
 def fetch_cover_image(base_url: str, config: dict):
 “””
@@ -133,7 +133,7 @@ img = soup.select_one(cover_sel)
 if not img or not (img.get(“src”) or img.get(“srcset”)):
 print(f”Cover selector ‘{cover_sel}’ not found at {base_url}”)
 return None, None
-# WeTriedTLS uses Next.js /_next/image?url=<encoded_real_url> — decode it
+# WeTriedTLS uses Next.js /_next/image?url=<encoded_real_url> – decode it
 img_url = img.get(“src”, “”)
 if “/_next/image” in img_url and “url=” in img_url:
 from urllib.parse import parse_qs, urlparse as _up, unquote
@@ -159,14 +159,14 @@ except Exception as e:
 print(f”Cover fetch failed: {e}”)
 return None, None
 
-# ── Text Extraction ────────────────────────────────────────────────────────────
+# – Text Extraction ————————————————————
 
 def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
 “”“Parse HTML and return clean chapter text, double-spaced between paragraphs.”””
 soup = BeautifulSoup(html_text, “html.parser”)
 
 ```
-# Sentinel check — means chapter doesn't exist
+# Sentinel check -- means chapter doesn't exist
 if config.get("sentinel") and config["sentinel"] in soup.get_text():
     raise ChapterNotFound(f"Chapter {ch_num} does not exist")
 
@@ -191,7 +191,7 @@ if config.get("title_sel"):
 
 stop_phrases = config.get("stop_phrases", [])
 
-# ── WeTriedTLS special handling ────────────────────────────────────────────
+# -- WeTriedTLS special handling --------------------------------------------
 # Structure: TL credit / <div data-type="horizontalRule"> / chapter body /
 # <div data-type="horizontalRule"> / footer credit.
 # We strip the credit blocks and render the hr divs as bold separator lines.
@@ -200,7 +200,7 @@ if config.get("hr_separator"):
     hr_divs = container.find_all("div", attrs={"data-type": "horizontalRule"})
 
     if hr_divs:
-        HR_MARKER = "─" * 60
+        HR_MARKER = "-" * 60
 
         # Collect everything AFTER the first hr div
         chapter_els = []
@@ -246,7 +246,7 @@ if config.get("hr_separator"):
         return "\n\n".join(lines)
     # Fallthrough to generic extraction if no hr divs found
 
-# ── Generic extraction ─────────────────────────────────────────────────────
+# -- Generic extraction -----------------------------------------------------
 lines = []
 if title_text:
     lines.append(title_text)
@@ -277,7 +277,7 @@ if not lines:
 return "\n\n".join(lines)
 ```
 
-# ── Async Fetcher ──────────────────────────────────────────────────────────────
+# – Async Fetcher –––––––––––––––––––––––––––––––
 
 def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
 “””
@@ -319,7 +319,7 @@ chapter_url: str,
 config: dict,
 ch_num: int,
 ) -> str:
-“”“Async wrapper — runs curl_cffi in a thread executor so it doesn’t block the event loop.”””
+“”“Async wrapper – runs curl_cffi in a thread executor so it doesn’t block the event loop.”””
 async with sem:
 loop = asyncio.get_running_loop()
 return await loop.run_in_executor(
@@ -387,7 +387,7 @@ for ch_num in range(start, end + 1):
 return chapters, failed
 ```
 
-# ── Selenium Fallback ──────────────────────────────────────────────────────────
+# – Selenium Fallback –––––––––––––––––––––––––––––
 
 def scrape_with_selenium(
 base_url: str, start: int, end: int, config: dict, progress_cb=None
@@ -449,7 +449,7 @@ finally:
 return chapters, failed
 ```
 
-# ── Output Builders ────────────────────────────────────────────────────────────
+# – Output Builders ————————————————————
 
 def build_epub(
 chapters_dict: dict,
@@ -485,7 +485,7 @@ zero_pad = len(str(max(chapters_dict.keys())))
 for num in sorted(chapters_dict.keys()):
     text = chapters_dict[num]
     chap_title = f"Chapter {num}"
-    # Each paragraph is already separated by \n\n — split and render as <p> tags
+    # Each paragraph is already separated by \n\n -- split and render as <p> tags
     paras = [p.strip() for p in re.split(r"\n\n", text) if p.strip()]
     html_body = "".join(f"<p>{html.escape(p)}</p>" for p in paras)
     html_doc = (
@@ -525,12 +525,12 @@ zf.writestr(f”Chapter {num}.txt”, chapters_dict[num])
 buf.seek(0)
 return buf.read()
 
-# ── SSE Helper ─────────────────────────────────────────────────────────────────
+# – SSE Helper —————————————————————–
 
 def sse(data: dict) -> str:
 return f”data: {json.dumps(data)}\n\n”
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# – Routes ———————————————————————
 
 @app.route(”/”, methods=[“GET”])
 def root():
