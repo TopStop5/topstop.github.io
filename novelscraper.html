@@ -11,7 +11,7 @@
     :root {
       --bg: #000; --panel: #080808; --entry: #050505;
       --text: #f3f3f3; --muted: #9d9d9d; --accent: #7C3AED; --accent-h: #6D28D9;
-      --accent2: #a855f7; --success: #22C55E; --error: #EF4444; --warn: #F59E0B;
+      --accent2: #a855f7; --success: #22C55E; --error: #EF4444; --warn: #F59E0B; --never: #919191;
     }
     body { background: var(--bg); color: var(--text); font-family: 'Rajdhani', sans-serif; min-height: 100vh; }
     body::before {
@@ -102,13 +102,14 @@
     .site-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .site-dot.green  { background: var(--success); box-shadow: 0 0 5px rgba(34,197,94,0.5); }
     .site-dot.yellow { background: var(--warn);    box-shadow: 0 0 5px rgba(245,158,11,0.4); }
+    .site-dot.gray { background: var(--never);    box-shadow: 0 0 5px rgba(53, 52, 52, 0.4); }
     .site-info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
     .site-name { font-size: 14px; font-weight: 600; }
     .site-url  { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: #3a3a3a; margin-top: 1px; }
     .site-status { font-family: 'Share Tech Mono', monospace; font-size: 10px; padding: 2px 8px; border-radius: 3px; white-space: nowrap; }
     .site-status.green  { color: var(--success); background: rgba(34,197,94,0.07);  border: 1px solid rgba(34,197,94,0.15); }
     .site-status.yellow { color: var(--warn);    background: rgba(245,158,11,0.07); border: 1px solid rgba(245,158,11,0.15); }
-
+    .site-status.gray { color: var(--never);    background: rgba(112, 111, 111, 0.07); border: 1px solid rgba(112, 111, 111, 0.15); }
     .progress-section { display: none; }
     .progress-section.visible { display: block; }
 
@@ -182,18 +183,18 @@
     <div class="coll-body" id="sites-body">
       <div class="site-row">
         <span class="site-dot green"></span>
-        <div class="site-info"><span class="site-name">NovelFire</span><span class="site-url">novelfire.net</span></div>
+        <div class="site-info"><span class="site-name">NovelFire</span><span class="site-url">Novelfire.net</span></div>
         <span class="site-status green">Supported</span>
       </div>
       <div class="site-row">
-        <span class="site-dot green"></span>
-        <div class="site-info"><span class="site-name">WeTriedTLS</span><span class="site-url">wetriedtls.com</span></div>
-        <span class="site-status green">Supported</span>
+        <span class="site-dot yellow"></span>
+        <div class="site-info"><span class="site-name">WeTriedTLS</span><span class="site-url">Wetriedtls.com</span></div>
+        <span class="site-status yellow">Coming Soon</span>
       </div>
       <div class="site-row">
-        <span class="site-dot green"></span>
-        <div class="site-info"><span class="site-name">Webnovel Translations</span><span class="site-url">webnoveltranslations.net</span></div>
-        <span class="site-status green">Supported</span>
+        <span class="site-dot yellow"></span>
+        <div class="site-info"><span class="site-name">Webnovel Translations</span><span class="site-url">Webnoveltranslations.net</span></div>
+        <span class="site-status yellow">Coming Soon</span>
       </div>
     </div>
   </div>
