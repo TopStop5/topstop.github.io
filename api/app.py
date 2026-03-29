@@ -63,7 +63,9 @@ SITE_CONFIG = {
         "remove_sels":  [],
         "stop_phrases": [],
         "sentinel":     None,
-        "needs_js":     True,   # Next.js App Router — content only exists after JS execution
+        "needs_js":     False,
+        "client_fetch": True,   # Railway blocks outbound to Fastly CDN — browser fetches
+                                # each chapter URL and POSTs the HTML to /parse instead
         "hr_separator": True,   # split TL credit from chapter at <div data-type="horizontalRule">
     },
     "webnoveltranslations.net": {
@@ -432,7 +434,10 @@ async def scrape_all_chapters(
             if progress_cb:
                 progress_cb(done_count, total, ch_num, ok, end_of_novel=ch_num)
             continue
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(f"CH{ch_num} FETCH ERROR: {e}")
+            traceback.print_exc()
             failed.append(ch_num)
             ok = False
 
@@ -491,7 +496,10 @@ def scrape_with_selenium(
                 if progress_cb:
                     progress_cb(i, total, ch_num, False, end_of_novel=ch_num)
                 break
-            except Exception:
+            except Exception as e:
+                import traceback
+                print(f"CH{ch_num} SELENIUM ERROR: {e}")
+                traceback.print_exc()
                 failed.append(ch_num)
                 ok = False
 
@@ -748,6 +756,122 @@ def scrape_stream():
     )
 
 
+@app.route("/parse", methods=["POST"])
+def parse():
+    """
+    Accepts raw HTML + site domain + chapter number from the browser.
+    Used by client_fetch sites where Railway cannot reach the target host.
+    Returns {"text": "...", "ok": true} or {"error": "...", "ok": false}.
+    """
+    data   = request.get_json(silent=True) or {}
+    domain = str(data.get("domain", "")).strip()
+    ch_num = int(data.get("ch", 0))
+    html_text = str(data.get("html", ""))
+
+    config = SITE_CONFIG.get(domain)
+    if not config:
+        return jsonify({"ok": False, "error": f"Unsupported site: {domain}"}), 400
+    if not html_text:
+        return jsonify({"ok": False, "error": "No HTML provided"}), 400
+
+    try:
+        text = extract_chapter_text(html_text, config, ch_num)
+        return jsonify({"ok": True, "text": text})
+    except ChapterNotFound as e:
+        return jsonify({"ok": False, "error": str(e), "end_of_novel": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/scrape-client-stream", methods=["POST"])
+def scrape_client_stream():
+    """
+    SSE endpoint for client_fetch sites.
+    The browser fetches each chapter itself and POSTs batches of
+    {ch, html} objects here. We parse and stream progress back.
+    Body: {url, format, start, end, chapters: [{ch, html}, ...]}
+    """
+    data = request.get_json(silent=True) or {}
+    url, fmt, start, end, err = _validate(data)
+    if err:
+        return err
+
+    domain = get_domain(url)
+    config = SITE_CONFIG.get(domain)
+    if not config:
+        return jsonify({"error": f"Unsupported site: {domain}"}), 400
+
+    base_url    = get_base_url(url)
+    novel_title = get_novel_title_from_url(url)
+    raw_chapters = data.get("chapters", [])  # [{ch: N, html: "..."}]
+
+    def generate():
+        import base64
+        chapters = {}
+        failed   = []
+        total    = end - start + 1
+
+        yield sse({"type": "start", "title": novel_title})
+
+        for i, item in enumerate(raw_chapters, 1):
+            ch_num   = int(item.get("ch", 0))
+            html_text = item.get("html", "")
+            try:
+                text = extract_chapter_text(html_text, config, ch_num)
+                chapters[ch_num] = text
+                ok = True
+            except ChapterNotFound as e:
+                ok = False
+                yield sse({"type": "progress", "done": i, "total": total,
+                           "ch": ch_num, "ok": False, "pct": int((i/total)*90),
+                           "end_of_novel": ch_num})
+                break
+            except Exception as e:
+                failed.append(ch_num)
+                ok = False
+
+            yield sse({"type": "progress", "done": i, "total": total,
+                       "ch": ch_num, "ok": ok, "pct": int((i/total)*90)})
+
+        if not chapters:
+            yield sse({"type": "error", "message": "No chapters could be parsed."})
+            return
+
+        yield sse({"type": "progress", "pct": 93, "message": "Building file..."})
+
+        safe_title = re.sub(r'[\\/*?:"<>|]', "-", novel_title).strip() or "Novel"
+        cover_image, cover_media_type = None, "image/jpeg"
+        if fmt == "epub":
+            cover_image, cover_media_type = fetch_cover_image(base_url, config)
+
+        try:
+            if fmt == "epub":
+                file_bytes = build_epub(chapters, novel_title, cover_image,
+                                        cover_media_type or "image/jpeg")
+                filename = f"{safe_title}.epub"
+                mimetype = "application/epub+zip"
+            else:
+                file_bytes = build_zip(chapters)
+                filename   = f"{safe_title}.zip"
+                mimetype   = "application/zip"
+        except Exception as e:
+            yield sse({"type": "error", "message": f"File build failed: {e}"})
+            return
+
+        yield sse({
+            "type": "done", "pct": 100,
+            "filename": filename, "mimetype": mimetype,
+            "chapters": len(chapters), "failed": failed,
+            "data": base64.b64encode(file_bytes).decode("utf-8"),
+        })
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/scrape", methods=["POST"])
 def scrape():
     """Legacy non-streaming endpoint. Kept for backwards compatibility."""
@@ -793,6 +917,38 @@ def scrape():
     buf = io.BytesIO(build_zip(chapters))
     return send_file(buf, mimetype="application/zip",
                      as_attachment=True, download_name=f"{safe_title}.zip")
+
+
+# Run smoke test on import (catches gunicorn worker startup failures early)
+import threading as _st
+
+
+def selenium_smoke_test():
+    """Run once at startup to verify Chromium/ChromeDriver are working."""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        opts = Options()
+        for arg in ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+                    "--disable-gpu", "--disable-extensions", "--log-level=3"]:
+            opts.add_argument(arg)
+        opts.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+        svc = Service(
+            executable_path=os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"),
+            log_path=os.devnull,
+        )
+        driver = webdriver.Chrome(service=svc, options=opts)
+        driver.get("about:blank")
+        driver.quit()
+        print("Selenium smoke test PASSED")
+    except Exception as e:
+        import traceback
+        print(f"Selenium smoke test FAILED: {e}")
+        traceback.print_exc()
+
+
+_st.Thread(target=selenium_smoke_test, daemon=True).start()
 
 
 if __name__ == "__main__":
