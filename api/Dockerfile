@@ -1,14 +1,14 @@
 FROM python:3.11-slim
 
-# curl_cffi bundles its own libcurl-impersonate — no system deps needed.
-# Only add these if you ever enable needs_js: True for a site (Selenium).
-# RUN apt-get update && apt-get install -y \
-#     chromium chromium-driver fonts-liberation libnss3 \
-#     libatk-bridge2.0-0 libx11-xcb1 libxcb-dri3-0 libxcomposite1 \
-#     libxrandr2 libgbm1 libgtk-3-0 libasound2 \
-#  && rm -rf /var/lib/apt/lists/*
-# ENV CHROME_BIN=/usr/bin/chromium
-# ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+# Install Chromium + ChromeDriver for Selenium (used by needs_js sites e.g. WeTriedTLS)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium chromium-driver \
+        fonts-liberation libnss3 libatk-bridge2.0-0 \
+        libx11-xcb1 libxcb-dri3-0 libxcomposite1 \
+        libxrandr2 libgbm1 libgtk-3-0 libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 ENV PORT=8080
 
