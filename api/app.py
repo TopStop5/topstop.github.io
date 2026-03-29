@@ -52,6 +52,7 @@ SITE_CONFIG = {
         "stop_phrases": [],
         "sentinel":     None,
         "needs_js":     False,
+        "next_data_content_key": "content",  # pull chapter HTML from __NEXT_DATA__ pageProps
         "hr_separator": True,   # split TL credit from chapter at <div data-type="horizontalRule">
     },
     "webnoveltranslations.net": {
@@ -154,16 +155,71 @@ def fetch_cover_image(base_url: str, config: dict):
 
 # ── Text Extraction ────────────────────────────────────────────────────────────
 
+def _find_key_recursive(obj, key):
+    """Depth-first search for a key in a nested dict/list structure."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            result = _find_key_recursive(v, key)
+            if result is not None:
+                return result
+    elif isinstance(obj, list):
+        for item in obj:
+            result = _find_key_recursive(item, key)
+            if result is not None:
+                return result
+    return None
+
+
 def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
     """Parse HTML and return clean chapter text, double-spaced between paragraphs."""
     soup = BeautifulSoup(html_text, "html.parser")
 
-    # Sentinel check — means chapter doesn't exist
+    # Sentinel check
     if config.get("sentinel") and config["sentinel"] in soup.get_text():
         raise ChapterNotFound(f"Chapter {ch_num} does not exist")
 
+    # ── Next.js __NEXT_DATA__ extraction ──────────────────────────────────────
+    # Sites like WeTriedTLS render content via React client-side. The raw HTTP
+    # response is a JS shell, but the chapter HTML is serialised inside
+    # <script id="__NEXT_DATA__">. We extract it directly — no Selenium needed.
+    next_data_key = config.get("next_data_content_key")
+    if next_data_key:
+        next_script = soup.find("script", id="__NEXT_DATA__")
+        if next_script:
+            try:
+                page_data  = json.loads(next_script.string)
+                page_props = page_data.get("props", {}).get("pageProps", {})
+                raw        = _find_key_recursive(page_props, next_data_key)
+
+                if raw and isinstance(raw, str) and len(raw) > 50:
+                    soup = BeautifulSoup(f'<div id="nd-root">{raw}</div>', "html.parser")
+                    print(f"CH{ch_num}: __NEXT_DATA__ OK ({len(raw)} chars)")
+                else:
+                    def _all_keys(obj, prefix=""):
+                        keys = []
+                        if isinstance(obj, dict):
+                            for k, v in obj.items():
+                                full = f"{prefix}.{k}" if prefix else k
+                                keys.append(full)
+                                keys.extend(_all_keys(v, full))
+                        elif isinstance(obj, list) and obj:
+                            keys.extend(_all_keys(obj[0], f"{prefix}[]"))
+                        return keys
+                    print(f"CH{ch_num}: __NEXT_DATA__ key '{next_data_key}' not found. "
+                          f"pageProps keys: {_all_keys(page_props)[:20]}")
+            except Exception as e:
+                print(f"CH{ch_num}: __NEXT_DATA__ parse error: {e}")
+        else:
+            print(f"CH{ch_num}: no __NEXT_DATA__ script tag found")
+
     # Find content container
     container = soup.select_one(config["content_sel"])
+    # For __NEXT_DATA__ sites the original content_sel won't exist in the
+    # re-parsed soup — fall back to the injected root div
+    if not container and next_data_key:
+        container = soup.select_one("#nd-root")
     if not container:
         raise Exception(
             f"Content container '{config['content_sel']}' not found for chapter {ch_num}"
@@ -454,13 +510,8 @@ def build_epub(
 
     if cover_image:
         ext = cover_media_type.split("/")[-1].replace("jpeg", "jpg")
-        cover_item = epub.EpubItem(
-            uid="cover-image",
-            file_name=f"images/cover.{ext}",
-            media_type=cover_media_type,
-            content=cover_image,
-        )
-        book.add_item(cover_item)
+        # set_cover() internally adds the image item — don't call add_item()
+        # separately or the zip will contain a duplicate entry and warn/corrupt.
         book.set_cover(f"images/cover.{ext}", cover_image)
 
     epub_chapters = []
