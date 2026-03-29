@@ -41,7 +41,19 @@ SITE_CONFIG = {
         ],
         "sentinel":     "Some novel pages moved for better user experience",
         "needs_js":     False,
-        "impersonate":  "chrome124",   # upgraded: chrome120 now 403s on novelfire
+        "impersonate":  "chrome131",   # chrome124 now 403s; try latest fingerprint
+        "extra_headers": {            # extra headers help pass CF bot checks
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        },
     },
     "wetriedtls.com": {
         "content_sel":  ".container .reader-container",
@@ -51,8 +63,7 @@ SITE_CONFIG = {
         "remove_sels":  [],
         "stop_phrases": [],
         "sentinel":     None,
-        "needs_js":     False,
-        "next_data_content_key": "content",  # pull chapter HTML from __NEXT_DATA__ pageProps
+        "needs_js":     True,   # Next.js App Router — content only exists after JS execution
         "hr_separator": True,   # split TL credit from chapter at <div data-type="horizontalRule">
     },
     "webnoveltranslations.net": {
@@ -327,7 +338,8 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
     Sync fetch using curl_cffi to impersonate a real Chrome TLS fingerprint,
     bypassing Cloudflare Turnstile / Bot Management.
     """
-    impersonate = config.get("impersonate", DEFAULT_IMPERSONATE)
+    impersonate  = config.get("impersonate", DEFAULT_IMPERSONATE)
+    extra_headers = config.get("extra_headers", {})
     last_exc = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
@@ -335,6 +347,7 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
             r = cffi_requests.get(
                 chapter_url,
                 impersonate=impersonate,
+                headers=extra_headers or None,
                 timeout=20,
             )
             print(f"CH{ch_num} status={r.status_code} url={r.url}")
