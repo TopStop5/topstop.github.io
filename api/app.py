@@ -5,12 +5,11 @@ import html
 import json
 import time
 import random
-import queue
-import threading
+import asyncio
 import tempfile
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
+
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
@@ -26,63 +25,55 @@ def add_cors(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
-# -- Site Config Registry -------------------------------------------------------
-# To add a new site, add one entry here. No other code changes needed.
-#
-# Keys:
-#   content_sel  : CSS selector for the chapter text container
-#   title_sel    : CSS selector for the chapter title (optional)
-#   cover_sel    : CSS selector for the cover image on the novel index page (optional)
-#   url_pattern  : chapter URL template – use {base} and {num}
-#   remove_sels  : list of CSS selectors to strip before extracting text
-#   stop_phrases : list of strings – stop collecting paragraphs when seen
-#   sentinel     : string in page body that means "chapter doesn't exist"
-#   needs_js     : True = fall back to Selenium for this site
 
+# ── Site Config Registry ───────────────────────────────────────────────────────
 SITE_CONFIG = {
     "novelfire.net": {
-        "content_sel": "#content",
-        "title_sel": "span.chapter-title",
-        "cover_sel": "figure.cover img",
-        "url_pattern": "{base}/chapter-{num}",
-        "remove_sels": [".nf-ads"],
+        "content_sel":  "#content",
+        "title_sel":    "span.chapter-title",
+        "cover_sel":    "figure.cover img",
+        "url_pattern":  "{base}/chapter-{num}",
+        "remove_sels":  [".nf-ads"],
         "stop_phrases": [
             "If you find any errors",
             "Share to your friends",
             "Tap the middle of the screen",
         ],
-        "sentinel": "Some novel pages moved for better user experience",
-        "needs_js": False,
+        "sentinel":     "Some novel pages moved for better user experience",
+        "needs_js":     False,
+        "impersonate":  "chrome124",   # upgraded: chrome120 now 403s on novelfire
     },
     "wetriedtls.com": {
-        "content_sel": ".container .reader-container",
-        "title_sel": None,
-        "cover_sel": "img.rounded",
-        "url_pattern": "{base}/chapter-{num}",
-        "remove_sels": [],
+        "content_sel":  ".container .reader-container",
+        "title_sel":    None,
+        "cover_sel":    "img.rounded",
+        "url_pattern":  "{base}/chapter-{num}",
+        "remove_sels":  [],
         "stop_phrases": [],
-        "sentinel": None,
-        "needs_js": False,
-        "hr_separator": True,  # split TL credit from chapter at <div data-type="horizontalRule">
+        "sentinel":     None,
+        "needs_js":     False,
+        "hr_separator": True,   # split TL credit from chapter at <div data-type="horizontalRule">
     },
     "webnoveltranslations.net": {
-        "content_sel": "#novel-chapter-container",
-        "title_sel": "h1",
-        "cover_sel": ".novel-cover img",
-        "url_pattern": "{base}/chapter-{num}/",
-        "remove_sels": [],
+        "content_sel":  "#novel-chapter-container",
+        "title_sel":    "h1",
+        "cover_sel":    ".novel-cover img",
+        "url_pattern":  "{base}/chapter-{num}/",
+        "remove_sels":  [],
         "stop_phrases": [],
-        "sentinel": None,
-        "needs_js": False,
+        "sentinel":     None,
+        "needs_js":     False,
     },
 }
 
 MAX_CONCURRENT = 3
 RETRY_ATTEMPTS = 3
-RETRY_DELAY = 2.0
-REQUEST_DELAY = 0.5
+RETRY_DELAY    = 2.0
+REQUEST_DELAY  = 0.5
+DEFAULT_IMPERSONATE = "chrome124"
 
-# -- Custom Exceptions ----------------------------------------------------------
+
+# ── Custom Exceptions ──────────────────────────────────────────────────────────
 
 class ChapterNotFound(Exception):
     """Chapter does not exist on the site."""
@@ -90,7 +81,8 @@ class ChapterNotFound(Exception):
 class UnsupportedSite(Exception):
     pass
 
-# -- URL Helpers ----------------------------------------------------------------
+
+# ── URL Helpers ────────────────────────────────────────────────────────────────
 
 def get_domain(url: str) -> str:
     return urlparse(url).netloc.replace("www.", "")
@@ -107,7 +99,8 @@ def get_novel_title_from_url(url: str) -> str:
             return part.replace("-", " ").title()
     return "Novel"
 
-# -- Cover Fetcher --------------------------------------------------------------
+
+# ── Cover Fetcher ──────────────────────────────────────────────────────────────
 
 def fetch_cover_image(base_url: str, config: dict):
     """
@@ -118,8 +111,10 @@ def fetch_cover_image(base_url: str, config: dict):
     if not cover_sel:
         return None, None
 
+    impersonate = config.get("impersonate", DEFAULT_IMPERSONATE)
+
     try:
-        r = cffi_requests.get(base_url, impersonate="chrome120", timeout=20)
+        r = cffi_requests.get(base_url, impersonate=impersonate, timeout=20)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         img = soup.select_one(cover_sel)
@@ -127,7 +122,7 @@ def fetch_cover_image(base_url: str, config: dict):
             print(f"Cover selector '{cover_sel}' not found at {base_url}")
             return None, None
 
-        # WeTriedTLS uses Next.js /_next/image?url=<encoded_real_url> – decode it
+        # WeTriedTLS uses Next.js /_next/image?url=<encoded_real_url> — decode it
         img_url = img.get("src", "")
         if "/_next/image" in img_url and "url=" in img_url:
             from urllib.parse import parse_qs, urlparse as _up, unquote
@@ -143,7 +138,7 @@ def fetch_cover_image(base_url: str, config: dict):
             img_url = f"{parsed.scheme}://{parsed.netloc}{img_url}"
 
         print(f"Fetching cover: {img_url}")
-        img_r = cffi_requests.get(img_url, impersonate="chrome120", timeout=20)
+        img_r = cffi_requests.get(img_url, impersonate=impersonate, timeout=20)
         img_r.raise_for_status()
         ext = img_url.split("?")[0].rsplit(".", 1)[-1].lower()
         media_type = {
@@ -156,13 +151,14 @@ def fetch_cover_image(base_url: str, config: dict):
         print(f"Cover fetch failed: {e}")
         return None, None
 
-# -- Text Extraction ------------------------------------------------------------
+
+# ── Text Extraction ────────────────────────────────────────────────────────────
 
 def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
     """Parse HTML and return clean chapter text, double-spaced between paragraphs."""
     soup = BeautifulSoup(html_text, "html.parser")
 
-    # Sentinel check -- means chapter doesn't exist
+    # Sentinel check — means chapter doesn't exist
     if config.get("sentinel") and config["sentinel"] in soup.get_text():
         raise ChapterNotFound(f"Chapter {ch_num} does not exist")
 
@@ -187,7 +183,9 @@ def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
 
     stop_phrases = config.get("stop_phrases", [])
 
-    # -- WeTriedTLS special handling --------------------------------------------
+    # ── WeTriedTLS special handling ────────────────────────────────────────────
+    # The site wraps the TL's intro/credit block before a <div data-type="horizontalRule">,
+    # and the actual chapter text comes after it. We skip everything before the first HR.
     if config.get("hr_separator"):
         from bs4 import Tag, NavigableString
         hr_divs = container.find_all("div", attrs={"data-type": "horizontalRule"})
@@ -234,7 +232,10 @@ def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
                 raise Exception(f"No text extracted for chapter {ch_num}")
             return "\n\n".join(lines)
 
-    # -- Generic extraction -----------------------------------------------------
+        # No HR found — fall through to generic extraction below
+        print(f"WeTriedTLS CH{ch_num}: no horizontalRule div found, using generic extraction")
+
+    # ── Generic extraction ─────────────────────────────────────────────────────
     lines = []
     if title_text:
         lines.append(title_text)
@@ -262,20 +263,22 @@ def extract_chapter_text(html_text: str, config: dict, ch_num: int) -> str:
 
     return "\n\n".join(lines)
 
-# -- Sync Fetcher ---------------------------------------------------------------
+
+# ── Sync Fetcher ───────────────────────────────────────────────────────────────
 
 def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
     """
     Sync fetch using curl_cffi to impersonate a real Chrome TLS fingerprint,
     bypassing Cloudflare Turnstile / Bot Management.
     """
+    impersonate = config.get("impersonate", DEFAULT_IMPERSONATE)
     last_exc = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
             time.sleep(REQUEST_DELAY)
             r = cffi_requests.get(
                 chapter_url,
-                impersonate="chrome120",
+                impersonate=impersonate,
                 timeout=20,
             )
             print(f"CH{ch_num} status={r.status_code} url={r.url}")
@@ -288,6 +291,7 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
 
         except ChapterNotFound:
             raise  # never retry a missing chapter
+
         except Exception as e:
             last_exc = e
             if attempt < RETRY_ATTEMPTS - 1:
@@ -295,9 +299,22 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
 
     raise last_exc
 
-# -- Thread-pool scraper (replaces asyncio version) ----------------------------
 
-def scrape_all_chapters_sync(
+async def fetch_chapter(
+    loop,
+    sem: asyncio.Semaphore,
+    chapter_url: str,
+    config: dict,
+    ch_num: int,
+) -> str:
+    """Async wrapper — runs curl_cffi in a thread executor so it doesn't block the event loop."""
+    async with sem:
+        return await loop.run_in_executor(
+            None, fetch_chapter_sync, chapter_url, config, ch_num
+        )
+
+
+async def scrape_all_chapters(
     base_url: str,
     start: int,
     end: int,
@@ -305,61 +322,59 @@ def scrape_all_chapters_sync(
     progress_cb=None,
 ) -> tuple:
     """
-    Fetch chapters concurrently using a ThreadPoolExecutor.
-    This avoids asyncio.run() entirely, which was crashing inside gthread workers.
-
+    Fetch chapters concurrently.
     progress_cb(done, total, ch_num, ok, end_of_novel=None) called per chapter.
     Returns (chapters_dict, failed_list).
     """
-    url_pattern = config["url_pattern"]
-    total = end - start + 1
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
     chapters = {}
     failed = []
+    total = end - start + 1
+    url_pattern = config["url_pattern"]
+    loop = asyncio.get_event_loop()
+
+    tasks = {
+        ch_num: asyncio.create_task(
+            fetch_chapter(
+                loop, sem,
+                url_pattern.format(base=base_url, num=ch_num),
+                config, ch_num
+            )
+        )
+        for ch_num in range(start, end + 1)
+    }
+
+    done_count = 0
     novel_ended = False
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as executor:
-        # Submit all tasks upfront so they run concurrently
-        futures = {
-            executor.submit(
-                fetch_chapter_sync,
-                url_pattern.format(base=base_url, num=ch_num),
-                config,
-                ch_num,
-            ): ch_num
-            for ch_num in range(start, end + 1)
-        }
+    for ch_num in range(start, end + 1):
+        if novel_ended:
+            tasks[ch_num].cancel()
+            continue
 
-        done_count = 0
-        # as_completed yields futures as they finish (any order)
-        for future in as_completed(futures):
-            ch_num = futures[future]
+        try:
+            text = await tasks[ch_num]
+            chapters[ch_num] = text
+            ok = True
+        except ChapterNotFound:
+            novel_ended = True
+            ok = False
             done_count += 1
-            try:
-                if novel_ended:
-                    # Cancel remaining work; just mark as failed
-                    failed.append(ch_num)
-                    if progress_cb:
-                        progress_cb(done_count, total, ch_num, False)
-                    continue
-                text = future.result()
-                chapters[ch_num] = text
-                ok = True
-                if progress_cb:
-                    progress_cb(done_count, total, ch_num, ok)
-            except ChapterNotFound:
-                novel_ended = True
-                ok = False
-                if progress_cb:
-                    progress_cb(done_count, total, ch_num, ok, end_of_novel=ch_num)
-            except Exception:
-                failed.append(ch_num)
-                ok = False
-                if progress_cb:
-                    progress_cb(done_count, total, ch_num, ok)
+            if progress_cb:
+                progress_cb(done_count, total, ch_num, ok, end_of_novel=ch_num)
+            continue
+        except Exception:
+            failed.append(ch_num)
+            ok = False
+
+        done_count += 1
+        if progress_cb:
+            progress_cb(done_count, total, ch_num, ok)
 
     return chapters, failed
 
-# -- Selenium Fallback ----------------------------------------------------------
+
+# ── Selenium Fallback ──────────────────────────────────────────────────────────
 
 def scrape_with_selenium(
     base_url: str, start: int, end: int, config: dict, progress_cb=None
@@ -385,6 +400,7 @@ def scrape_with_selenium(
         log_path=os.devnull,
     )
     driver = webdriver.Chrome(service=service, options=opts)
+
     chapters, failed = {}, []
     total = end - start + 1
     url_pattern = config["url_pattern"]
@@ -409,6 +425,7 @@ def scrape_with_selenium(
             except Exception:
                 failed.append(ch_num)
                 ok = False
+
             if progress_cb:
                 progress_cb(i, total, ch_num, ok)
             time.sleep(random.uniform(0.4, 0.9))
@@ -417,7 +434,8 @@ def scrape_with_selenium(
 
     return chapters, failed
 
-# -- Output Builders ------------------------------------------------------------
+
+# ── Output Builders ────────────────────────────────────────────────────────────
 
 def build_epub(
     chapters_dict: dict,
@@ -426,7 +444,7 @@ def build_epub(
     cover_media_type: str = "image/jpeg",
 ) -> bytes:
     def safe(name):
-        return re.sub(r'[\/\*?:"<>|]', "-", name).strip()
+        return re.sub(r'[\\/*?:"<>|]', "-", name).strip()
 
     book = epub.EpubBook()
     book.set_identifier(safe(novel_title.lower()) or "novel")
@@ -490,12 +508,14 @@ def build_zip(chapters_dict: dict) -> bytes:
     buf.seek(0)
     return buf.read()
 
-# -- SSE Helper -----------------------------------------------------------------
+
+# ── SSE Helper ─────────────────────────────────────────────────────────────────
 
 def sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
-# -- Routes ---------------------------------------------------------------------
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def root():
@@ -505,6 +525,7 @@ def root():
         "routes": ["/", "/health", "/scrape", "/scrape-stream"],
         "supported_sites": list(SITE_CONFIG.keys()),
     })
+
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -531,7 +552,6 @@ def _validate(data):
         return None, None, None, None, (jsonify({"error": "End must be >= start."}), 400)
     if end - start > 99:
         return None, None, None, None, (jsonify({"error": "Max 100 chapters per request."}), 400)
-
     return url, fmt, start, end, None
 
 
@@ -557,12 +577,9 @@ def scrape_stream():
     novel_title = get_novel_title_from_url(url)
 
     def generate():
-        import base64
+        import threading, base64
 
-        # Thread-safe queue: scrape thread puts events, generator consumes them.
-        # None sentinel signals scrape is done.
-        event_queue = queue.Queue()
-
+        events        = []
         scrape_result = {}
         scrape_error  = {}
 
@@ -572,24 +589,26 @@ def scrape_stream():
                   "ch": ch_num, "ok": ok, "pct": pct}
             if end_of_novel:
                 ev["end_of_novel"] = end_of_novel
-            event_queue.put(ev)
+            events.append(ev)
 
         def run_scrape():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
                 if config.get("needs_js"):
                     chaps, fails = scrape_with_selenium(
                         base_url, start, end, config, progress_cb
                     )
                 else:
-                    chaps, fails = scrape_all_chapters_sync(
-                        base_url, start, end, config, progress_cb
+                    chaps, fails = loop.run_until_complete(
+                        scrape_all_chapters(base_url, start, end, config, progress_cb)
                     )
                 scrape_result["chapters"] = chaps
                 scrape_result["failed"]   = fails
             except Exception as e:
                 scrape_error["msg"] = str(e)
             finally:
-                event_queue.put(None)  # sentinel: scrape finished
+                loop.close()
 
         thread = threading.Thread(target=run_scrape, daemon=True)
         thread.start()
@@ -597,15 +616,18 @@ def scrape_stream():
         # Emit start event so the frontend can display the novel title
         yield sse({"type": "start", "title": novel_title})
 
-        # Forward events to client as they arrive; block on Queue.get() instead
-        # of busy-polling with sleep — no race condition, no missed events.
-        while True:
-            ev = event_queue.get()
-            if ev is None:
-                break
-            yield sse(ev)
+        # Forward events to client as they arrive
+        last_sent = 0
+        while thread.is_alive() or last_sent < len(events):
+            while last_sent < len(events):
+                yield sse(events[last_sent])
+                last_sent += 1
+            time.sleep(0.1)
 
-        thread.join()
+        # Drain any final events
+        while last_sent < len(events):
+            yield sse(events[last_sent])
+            last_sent += 1
 
         if scrape_error:
             yield sse({"type": "error", "message": scrape_error["msg"]})
@@ -620,7 +642,7 @@ def scrape_stream():
 
         yield sse({"type": "progress", "pct": 93, "message": "Building file..."})
 
-        safe_title = re.sub(r'[\\/\*?:"<>|]', "-", novel_title).strip() or "Novel"
+        safe_title = re.sub(r'[\\/*?:"<>|]', "-", novel_title).strip() or "Novel"
 
         cover_image, cover_media_type = None, "image/jpeg"
         if fmt == "epub":
@@ -656,8 +678,8 @@ def scrape_stream():
         stream_with_context(generate()),
         mimetype="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
-            "X-Accel-Buffering": "no",  # disable nginx buffering on Railway
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -682,15 +704,18 @@ def scrape():
         if config.get("needs_js"):
             chapters, failed = scrape_with_selenium(base_url, start, end, config)
         else:
-            # Use sync thread-pool version — no asyncio.run() in a worker thread
-            chapters, failed = scrape_all_chapters_sync(base_url, start, end, config)
+            loop = asyncio.new_event_loop()
+            chapters, failed = loop.run_until_complete(
+                scrape_all_chapters(base_url, start, end, config)
+            )
+            loop.close()
     except Exception as e:
         return jsonify({"error": f"Scrape failed: {e}"}), 500
 
     if not chapters:
         return jsonify({"error": "No chapters scraped.", "failed": failed}), 500
 
-    safe_title = re.sub(r'[\\/\*?:"<>|]', "-", novel_title).strip() or "Novel"
+    safe_title = re.sub(r'[\\/*?:"<>|]', "-", novel_title).strip() or "Novel"
 
     if fmt == "epub":
         cover_image, cover_media_type = fetch_cover_image(base_url, config)
