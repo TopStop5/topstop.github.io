@@ -654,8 +654,8 @@ def _validate(data):
         return None, None, None, None, (jsonify({"error": "Chapters must be >= 1."}), 400)
     if end < start:
         return None, None, None, None, (jsonify({"error": "End must be >= start."}), 400)
-    if end - start > 99:
-        return None, None, None, None, (jsonify({"error": "Max 100 chapters per request."}), 400)
+    if end - start > 9999:
+        return None, None, None, None, (jsonify({"error": "Max 10,000 chapters per request."}), 400)
     return url, fmt, start, end, None
 
 
