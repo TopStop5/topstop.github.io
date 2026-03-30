@@ -56,7 +56,7 @@ SITE_CONFIG = {
         },
     },
     "wetriedtls.com": {
-        "content_sel":  ".container .reader-container",
+        "content_sel":  "#reader-container",
         "title_sel":    None,
         "cover_sel":    "img.rounded",
         "url_pattern":  "{base}/chapter-{num}",
