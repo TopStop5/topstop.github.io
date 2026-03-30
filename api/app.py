@@ -63,13 +63,7 @@ SITE_CONFIG = {
         "remove_sels":  [],
         "stop_phrases": [],
         "sentinel":     None,
-        "needs_js":     False,
-        # next_data_content_key: the __NEXT_DATA__ pageProps key that holds chapter HTML.
-        # Set to None for auto-probe (tries common keys; logs found key on first success).
-        "next_data_content_key": None,
-        "next_data_probe": True,   # auto-probe __NEXT_DATA__ even without a known key
-        "client_fetch": True,   # Railway blocks outbound to Fastly CDN — browser fetches
-                                # each chapter URL and POSTs the HTML to /parse instead
+        "needs_js":     True,   # Next.js/React — Selenium waits for #reader-container to render
         "hr_separator": True,   # split TL credit from chapter at <div data-type="horizontalRule">
     },
     "webnoveltranslations.net": {
