@@ -486,6 +486,36 @@ async def scrape_all_chapters(
         if progress_cb:
             progress_cb(done_count, total, ch_num, ok)
 
+        # ── Retry failed chapters (up to 2 more attempts) ─────────────────────────
+    if failed:
+        for retry_round in range(1, 3):
+            if not failed:
+                break
+            print(f"Retry round {retry_round} for chapters: {failed}")
+            still_failed = []
+            retry_tasks = {
+                ch_num: asyncio.create_task(
+                    fetch_chapter(
+                        loop, sem,
+                        url_pattern.format(base=base_url, num=ch_num),
+                        config, ch_num
+                    )
+                )
+                for ch_num in failed
+            }
+            for ch_num in failed:
+                try:
+                    text = await retry_tasks[ch_num]
+                    chapters[ch_num] = text
+                    if progress_cb:
+                        progress_cb(done_count, total, ch_num, True)
+                except ChapterNotFound:
+                    still_failed.append(ch_num)
+                except Exception as e:
+                    print(f"CH{ch_num} RETRY {retry_round} ERROR: {e}")
+                    still_failed.append(ch_num)
+            failed = still_failed
+
     return chapters, failed
 
 
@@ -663,8 +693,8 @@ def _validate(data):
         return None, None, None, None, (jsonify({"error": "Chapters must be >= 1."}), 400)
     if end < start:
         return None, None, None, None, (jsonify({"error": "End must be >= start."}), 400)
-    if end - start > 99:
-        return None, None, None, None, (jsonify({"error": "Max 100 chapters per request."}), 400)
+    if end - start > 9999:
+        return None, None, None, None, (jsonify({"error": "Max 10,000 chapters per request."}), 400)
     return url, fmt, start, end, None
 
 
