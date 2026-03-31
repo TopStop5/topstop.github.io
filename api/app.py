@@ -41,8 +41,10 @@ SITE_CONFIG = {
         ],
         "sentinel":     "Some novel pages moved for better user experience",
         "needs_js":     False,
-        "impersonate":  "chrome131",   # chrome124 now 403s; try latest fingerprint
-        "extra_headers": {            # extra headers help pass CF bot checks
+        "impersonate":  "chrome131",
+        "max_concurrent": 1,    # sequential — novelfire 429s under concurrent load
+        "request_delay":  1.5,  # 1.5s between requests to stay under rate limit
+        "extra_headers": {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
@@ -372,12 +374,13 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
     Sync fetch using curl_cffi to impersonate a real Chrome TLS fingerprint,
     bypassing Cloudflare Turnstile / Bot Management.
     """
-    impersonate  = config.get("impersonate", DEFAULT_IMPERSONATE)
+    impersonate   = config.get("impersonate", DEFAULT_IMPERSONATE)
     extra_headers = config.get("extra_headers", {})
+    req_delay     = config.get("request_delay", REQUEST_DELAY)
     last_exc = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            time.sleep(REQUEST_DELAY)
+            time.sleep(req_delay)
             r = cffi_requests.get(
                 chapter_url,
                 impersonate=impersonate,
@@ -389,6 +392,12 @@ def fetch_chapter_sync(chapter_url: str, config: dict, ch_num: int) -> str:
 
             if r.status_code == 404:
                 raise ChapterNotFound(f"Chapter {ch_num} returned 404")
+            if r.status_code == 429:
+                wait = 10 * (attempt + 1)
+                print(f"CH{ch_num} rate limited (429), backing off {wait}s")
+                time.sleep(wait)
+                last_exc = Exception(f"HTTP Error 429 (rate limited) for chapter {ch_num}")
+                continue
             r.raise_for_status()
             return extract_chapter_text(r.text, config, ch_num)
 
@@ -429,7 +438,7 @@ async def scrape_all_chapters(
     progress_cb(done, total, ch_num, ok, end_of_novel=None) called per chapter.
     Returns (chapters_dict, failed_list).
     """
-    sem = asyncio.Semaphore(MAX_CONCURRENT)
+    sem = asyncio.Semaphore(config.get("max_concurrent", MAX_CONCURRENT))
     chapters = {}
     failed = []
     total = end - start + 1
