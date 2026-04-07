@@ -81,7 +81,7 @@ SITE_CONFIG = {
 MAX_CONCURRENT = 3
 RETRY_ATTEMPTS = 3
 RETRY_DELAY    = 2.0
-REQUEST_DELAY  = time.sleep(random.uniform(1.5, 3.5))
+REQUEST_DELAY  = (1.5, 3.5)
 DEFAULT_IMPERSONATE = "chrome124"
 
 
